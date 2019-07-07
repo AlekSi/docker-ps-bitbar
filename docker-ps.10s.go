@@ -19,6 +19,7 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"sort"
 	"strings"
 	"time"
 )
@@ -39,6 +40,22 @@ type container struct {
 	RunningFor   string `json:"RunningFor"`
 	Size         string `json:"Size"`
 	Status       string `json:"Status"`
+
+	project string
+}
+
+func (c *container) setProject() {
+	parts := strings.Split(c.Labels, ",")
+	for _, part := range parts {
+		pair := strings.Split(part, "=")
+		if len(pair) != 2 {
+			continue
+		}
+		if pair[0] == "com.docker.compose.project" {
+			c.project = pair[1]
+			return
+		}
+	}
 }
 
 func (c *container) createdAt() time.Time {
@@ -50,110 +67,174 @@ func (c *container) running() bool {
 	return strings.HasPrefix(c.Status, "Up ")
 }
 
-func ps() (res []container, err error) {
+// ps returns all containers grouped by Docker Compose project.
+func ps() (map[string][]container, error) {
 	cmd := exec.Command(dockerBin, "ps", "--all", "--no-trunc", "--format={{json .}}")
-	var b []byte
-	if b, err = cmd.Output(); err != nil {
-		return
+	cmd.Stderr = os.Stderr
+	b, err := cmd.Output()
+	if err != nil {
+		return nil, err
 	}
 
+	var containers []container
 	d := json.NewDecoder(bytes.NewReader(b))
 	for {
 		var c container
 		if err = d.Decode(&c); err != nil {
 			if err == io.EOF {
-				err = nil
+				break
 			}
-			return
+			return nil, err
 		}
-		res = append(res, c)
+		c.setProject()
+		containers = append(containers, c)
 	}
+
+	sort.Slice(containers, func(i int, j int) bool {
+		if containers[i].project != containers[j].project {
+			return containers[i].project < containers[j].project
+		}
+		return containers[i].Names < containers[j].Names
+	})
+
+	res := make(map[string][]container)
+	for _, c := range containers {
+		res[c.project] = append(res[c.project], c)
+	}
+	return res, nil
 }
 
-func pruneCmd() {
-	cmd := exec.Command(dockerBin, "system", "prune", "--force", "--volumes")
-	if err := cmd.Run(); err != nil {
-		log.Fatal(err)
-	}
-}
-
-func wipeCmd() {
-	containers, err := ps()
+func containerCmd(command, project string) {
+	projects, err := ps()
 	if err != nil {
 		log.Fatal(err)
 	}
 
 	var ids []string
-	for _, c := range containers {
-		if c.running() {
-			ids = append(ids, c.ID)
+	for p, containers := range projects {
+		if project != "" && project != p {
+			continue
+		}
+
+		for _, c := range containers {
+			var add bool
+			switch command {
+			case "start":
+				add = !c.running()
+			case "restart":
+				add = true
+			case "stop", "kill":
+				add = c.running()
+			default:
+				log.Fatalf("Unexpected command %s.", command)
+			}
+
+			if add {
+				ids = append(ids, c.ID)
+			}
 		}
 	}
-	if len(ids) > 0 {
-		args := append([]string{"kill"}, ids...)
-		cmd := exec.Command(dockerBin, args...)
-		if err = cmd.Run(); err != nil {
-			log.Fatal(err)
-		}
+	if len(ids) == 0 {
+		return
 	}
 
-	pruneCmd()
+	args := append([]string{command}, ids...)
+	cmd := exec.Command(dockerBin, args...)
+	log.Printf(strings.Join(cmd.Args, " "))
+	cmd.Stderr = os.Stderr
+	if err = cmd.Run(); err != nil {
+		log.Fatal(err)
+	}
+}
+
+func pruneCmd() {
+	cmd := exec.Command(dockerBin, "system", "prune", "--force", "--volumes")
+	log.Printf(strings.Join(cmd.Args, " "))
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		log.Fatal(err)
+	}
 }
 
 func defaultCmd() {
 	bin, _ := os.Executable()
 
-	containers, err := ps()
+	projects, err := ps()
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	if len(containers) == 0 {
+	if len(projects) == 0 {
 		fmt.Println("🐳")
 	} else {
-		var running int
-		for _, c := range containers {
-			if c.running() {
-				running++
+		var total, running int
+		for _, containers := range projects {
+			for _, c := range containers {
+				total++
+				if c.running() {
+					running++
+				}
 			}
 		}
-		fmt.Printf("🐳%d/%d\n", running, len(containers))
+		fmt.Printf("🐳%d/%d\n", running, total)
 	}
-	fmt.Println("---")
 
-	for _, c := range containers {
-		fmt.Printf("%s (%s) | ", c.Names, c.Image)
-		if c.running() {
-			fmt.Printf("color=green bash=%q param1=stop param2=%s terminal=false refresh=true\n", dockerBin, c.ID)
-		} else {
-			fmt.Printf("color=red bash=%q param1=start param2=%s terminal=false refresh=true\n", dockerBin, c.ID)
+	projectNames := make([]string, 0, len(projects))
+	for p := range projects {
+		projectNames = append(projectNames, p)
+	}
+	sort.Strings(projectNames)
+
+	for _, p := range projectNames {
+		fmt.Println("---")
+		fmt.Printf("%s\n", p)
+
+		if p != "" {
+			fmt.Printf("-- ▶️ Start all | bash=%q param1=-project=%s param2=start terminal=false refresh=true\n", bin, p)
+			fmt.Printf("-- ⏹ Stop all | bash=%q param1=-project=%s param2=stop terminal=false refresh=true\n", bin, p)
+			fmt.Printf("-- 🔄 Restart all | bash=%q param1=-project=%s param2=restart terminal=false refresh=true\n", bin, p)
+		}
+
+		for _, c := range projects[p] {
+			fmt.Printf("%s (%s) | ", c.Names, c.Image)
+			if c.running() {
+				fmt.Printf("color=green bash=%q param1=stop param2=%s terminal=false refresh=true\n", dockerBin, c.ID)
+			} else {
+				fmt.Printf("color=red bash=%q param1=start param2=%s terminal=false refresh=true\n", dockerBin, c.ID)
+			}
 		}
 	}
-	fmt.Println("---")
-
-	fmt.Printf("🛑 Stop all | bash=%q param1=stop ", dockerBin)
-	for i, c := range containers {
-		fmt.Printf("param%d=%s ", i+2, c.ID)
-	}
-	fmt.Println("terminal=false refresh=true")
 
 	if bin != "" {
+		fmt.Println("---")
+		fmt.Printf("🛑 Stop all | bash=%q param1=stop terminal=false refresh=true\n", bin)
 		fmt.Printf("📛 Prune | bash=%q param1=-prune terminal=false refresh=true\n", bin)
-		fmt.Printf("🧨 Stop all and prune | bash=%q param1=-wipe terminal=false refresh=true\n", bin)
+		fmt.Printf("🧨 Kill all and prune | bash=%q param1=-prune param2=kill terminal=false refresh=true\n", bin)
 	}
 }
 
 func main() {
+	projectF := flag.String("project", "", "Docker Compose project")
 	pruneF := flag.Bool("prune", false, "prune all data")
-	wipeF := flag.Bool("wipe", false, "stop all containers and prune all data")
+	flag.Usage = func() {
+		fmt.Fprintf(flag.CommandLine.Output(), "Usage: %s [flags] [command]\n\n", os.Args[0])
+		fmt.Fprintf(flag.CommandLine.Output(), "Commands: start, stop, restart, kill.\n\n")
+		fmt.Fprintf(flag.CommandLine.Output(), "Flags:\n")
+		flag.PrintDefaults()
+	}
 	flag.Parse()
 
-	switch {
-	case *pruneF:
-		pruneCmd()
-	case *wipeF:
-		wipeCmd()
-	default:
+	switch flag.NArg() {
+	case 0:
 		defaultCmd()
+	case 1:
+		containerCmd(flag.Arg(0), *projectF)
+	default:
+		flag.Usage()
+		os.Exit(2)
+	}
+
+	if *pruneF {
+		pruneCmd()
 	}
 }
