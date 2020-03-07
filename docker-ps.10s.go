@@ -34,6 +34,11 @@ const (
 	Kubernetes
 )
 
+type project struct {
+	typ  ContainerType
+	name string
+}
+
 // container contains parsed `docker ps` output for a single container.
 type container struct {
 	Command      string `json:"Command"`
@@ -50,13 +55,12 @@ type container struct {
 	Size         string `json:"Size"`
 	Status       string `json:"Status"`
 
-	typ     ContainerType
-	project string
+	project project
 }
 
-// fill sets typ, project, and may also change other fields.
+// fill sets project field, and may also change other fields.
 func (c *container) fill() {
-	c.typ = Single
+	c.project.typ = Single
 
 	for _, part := range strings.Split(c.Labels, ",") {
 		pair := strings.Split(part, "=")
@@ -67,17 +71,17 @@ func (c *container) fill() {
 		k, v := pair[0], pair[1]
 		switch k {
 		case "com.docker.compose.project":
-			c.typ = Compose
-			c.project = "🐙 " + v
+			c.project.typ = Compose
+			c.project.name = v
 		case "io.kubernetes.pod.namespace":
-			c.typ = Kubernetes
-			c.project = "☸️ " + v
+			c.project.typ = Kubernetes
+			c.project.name = v
 
 			// remove very long image name with sha256 hash tag
 			c.Image = ""
 		}
 
-		if c.project != "" {
+		if c.project.name != "" {
 			return
 		}
 	}
@@ -92,8 +96,8 @@ func (c *container) running() bool {
 	return strings.HasPrefix(c.Status, "Up ")
 }
 
-// ps returns all containers grouped by Docker Compose project.
-func ps() (map[string][]container, error) {
+// ps returns all containers sorted by "project" (Docker Compose project, Kubernetes namespace) and name.
+func ps() ([]container, error) {
 	cmd := exec.Command(dockerBin, "ps", "--all", "--no-trunc", "--format={{json .}}")
 	cmd.Stderr = os.Stderr
 	b, err := cmd.Output()
@@ -116,47 +120,44 @@ func ps() (map[string][]container, error) {
 	}
 
 	sort.Slice(containers, func(i int, j int) bool {
-		if containers[i].project != containers[j].project {
-			return containers[i].project < containers[j].project
+		if containers[i].project.typ != containers[j].project.typ {
+			return containers[i].project.typ < containers[j].project.typ
+		}
+		if containers[i].project.name != containers[j].project.name {
+			return containers[i].project.name < containers[j].project.name
 		}
 		return containers[i].Names < containers[j].Names
 	})
 
-	res := make(map[string][]container)
-	for _, c := range containers {
-		res[c.project] = append(res[c.project], c)
-	}
-	return res, nil
+	return containers, nil
 }
 
-func containerCmd(command, project string) {
-	projects, err := ps()
+func containerCmd(command, projectName string) {
+	containers, err := ps()
 	if err != nil {
 		log.Fatal(err)
 	}
 
 	var ids []string
-	for p, containers := range projects {
-		if project != "" && project != p {
+	for _, c := range containers {
+		if projectName != "" && projectName != c.project.name {
 			continue
 		}
 
-		for _, c := range containers {
-			var add bool
-			switch command {
-			case "start":
-				add = !c.running()
-			case "restart":
-				add = true
-			case "stop", "kill":
-				add = c.running()
-			default:
-				log.Fatalf("Unexpected command %s.", command)
-			}
+		var add bool
+		switch command {
+		case "start":
+			add = !c.running()
+		case "restart":
+			add = true
+		case "stop", "kill":
+			add = c.running()
+		default:
+			log.Fatalf("Unexpected command %s.", command)
+		}
 
-			if add {
-				ids = append(ids, c.ID)
-			}
+		if add {
+			ids = append(ids, c.ID)
 		}
 	}
 	if len(ids) == 0 {
@@ -184,52 +185,55 @@ func pruneCmd() {
 func defaultCmd() {
 	bin, _ := os.Executable()
 
-	projects, err := ps()
+	containers, err := ps()
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	if len(projects) == 0 {
+	if len(containers) == 0 {
 		fmt.Println("🐳")
 	} else {
 		var total, running int
-		for _, containers := range projects {
-			for _, c := range containers {
-				total++
-				if c.running() {
-					running++
-				}
+		for _, c := range containers {
+			total++
+			if c.running() {
+				running++
 			}
 		}
 		fmt.Printf("🐳%d/%d\n", running, total)
 	}
+	fmt.Println("---")
 
-	projectNames := make([]string, 0, len(projects))
-	for p := range projects {
-		projectNames = append(projectNames, p)
-	}
-	sort.Strings(projectNames)
+	var lastProjectName string
+	for _, c := range containers {
+		if lastProjectName != c.project.name {
+			lastProjectName = c.project.name
 
-	for _, p := range projectNames {
-		fmt.Println("---")
-		fmt.Printf("%s\n", p)
+			fmt.Println("---")
+			switch c.project.typ {
+			case Compose:
+				fmt.Printf("🐙 %s\n", lastProjectName)
 
-		if p != "" {
-			fmt.Printf("-- ▶️ Start all | bash=%q param1=-project=%s param2=start terminal=false refresh=true\n", bin, p)
-			fmt.Printf("-- ⏹ Stop all | bash=%q param1=-project=%s param2=stop terminal=false refresh=true\n", bin, p)
-			fmt.Printf("-- 🔄 Restart all | bash=%q param1=-project=%s param2=restart terminal=false refresh=true\n", bin, p)
+				fmt.Printf("-- ▶️ Start all | bash=%q param1=-project=%s param2=start terminal=false refresh=true\n", bin, lastProjectName)
+				fmt.Printf("-- ⏹ Stop all | bash=%q param1=-project=%s param2=stop terminal=false refresh=true\n", bin, lastProjectName)
+				fmt.Printf("-- 🔄 Restart all | bash=%q param1=-project=%s param2=restart terminal=false refresh=true\n", bin, lastProjectName)
+
+			case Kubernetes:
+				fmt.Printf("☸️ %s\n", lastProjectName)
+
+			default:
+				log.Fatalf("Unexpected project type %v.", c.project.typ)
+			}
 		}
 
-		for _, c := range projects[p] {
-			fmt.Printf("%s ", c.Names)
-			if c.Image != "" {
-				fmt.Printf("(%s) ", c.Image)
-			}
-			if c.running() {
-				fmt.Printf("| color=green bash=%q param1=stop param2=%s terminal=false refresh=true\n", dockerBin, c.ID)
-			} else {
-				fmt.Printf("| color=red bash=%q param1=start param2=%s terminal=false refresh=true\n", dockerBin, c.ID)
-			}
+		fmt.Printf("%s ", c.Names)
+		if c.Image != "" {
+			fmt.Printf("(%s) ", c.Image)
+		}
+		if c.running() {
+			fmt.Printf("| color=green bash=%q param1=stop param2=%s terminal=false refresh=true\n", dockerBin, c.ID)
+		} else {
+			fmt.Printf("| color=red bash=%q param1=start param2=%s terminal=false refresh=true\n", dockerBin, c.ID)
 		}
 	}
 
@@ -242,8 +246,8 @@ func defaultCmd() {
 }
 
 func main() {
-	projectF := flag.String("project", "", "Docker Compose project")
-	pruneF := flag.Bool("prune", false, "prune all data")
+	projectF := flag.String("project", "", `"project" (Docker Compose project, Kubernetes namespace)`)
+	pruneF := flag.Bool("prune", false, `prune all data`)
 	flag.Usage = func() {
 		fmt.Fprintf(flag.CommandLine.Output(), "Usage: %s [flags] [command]\n\n", os.Args[0])
 		fmt.Fprintf(flag.CommandLine.Output(), "Commands: start, stop, restart, kill.\n\n")
