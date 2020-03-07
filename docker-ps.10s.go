@@ -26,6 +26,15 @@ import (
 
 const dockerBin = "/usr/local/bin/docker"
 
+type ContainerType int
+
+const (
+	Single ContainerType = iota
+	Compose
+	Kubernetes
+)
+
+// container contains parsed `docker ps` output for a single container.
 type container struct {
 	Command      string `json:"Command"`
 	CreatedAt    string `json:"CreatedAt"`
@@ -41,18 +50,34 @@ type container struct {
 	Size         string `json:"Size"`
 	Status       string `json:"Status"`
 
+	typ     ContainerType
 	project string
 }
 
-func (c *container) setProject() {
-	parts := strings.Split(c.Labels, ",")
-	for _, part := range parts {
+// fill sets typ, project, and may also change other fields.
+func (c *container) fill() {
+	c.typ = Single
+
+	for _, part := range strings.Split(c.Labels, ",") {
 		pair := strings.Split(part, "=")
 		if len(pair) != 2 {
 			continue
 		}
-		if pair[0] == "com.docker.compose.project" {
-			c.project = pair[1]
+
+		k, v := pair[0], pair[1]
+		switch k {
+		case "com.docker.compose.project":
+			c.typ = Compose
+			c.project = "🐙 " + v
+		case "io.kubernetes.pod.namespace":
+			c.typ = Kubernetes
+			c.project = "☸️ " + v
+
+			// remove very long image name with sha256 hash tag
+			c.Image = ""
+		}
+
+		if c.project != "" {
 			return
 		}
 	}
@@ -86,7 +111,7 @@ func ps() (map[string][]container, error) {
 			}
 			return nil, err
 		}
-		c.setProject()
+		c.fill()
 		containers = append(containers, c)
 	}
 
@@ -140,7 +165,7 @@ func containerCmd(command, project string) {
 
 	args := append([]string{command}, ids...)
 	cmd := exec.Command(dockerBin, args...)
-	log.Printf(strings.Join(cmd.Args, " "))
+	log.Print(strings.Join(cmd.Args, " "))
 	cmd.Stderr = os.Stderr
 	if err = cmd.Run(); err != nil {
 		log.Fatal(err)
@@ -149,7 +174,7 @@ func containerCmd(command, project string) {
 
 func pruneCmd() {
 	cmd := exec.Command(dockerBin, "system", "prune", "--force", "--volumes")
-	log.Printf(strings.Join(cmd.Args, " "))
+	log.Print(strings.Join(cmd.Args, " "))
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
 		log.Fatal(err)
@@ -196,11 +221,14 @@ func defaultCmd() {
 		}
 
 		for _, c := range projects[p] {
-			fmt.Printf("%s (%s) | ", c.Names, c.Image)
+			fmt.Printf("%s ", c.Names)
+			if c.Image != "" {
+				fmt.Printf("(%s) ", c.Image)
+			}
 			if c.running() {
-				fmt.Printf("color=green bash=%q param1=stop param2=%s terminal=false refresh=true\n", dockerBin, c.ID)
+				fmt.Printf("| color=green bash=%q param1=stop param2=%s terminal=false refresh=true\n", dockerBin, c.ID)
 			} else {
-				fmt.Printf("color=red bash=%q param1=start param2=%s terminal=false refresh=true\n", dockerBin, c.ID)
+				fmt.Printf("| color=red bash=%q param1=start param2=%s terminal=false refresh=true\n", dockerBin, c.ID)
 			}
 		}
 	}
