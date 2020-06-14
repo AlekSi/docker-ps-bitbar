@@ -1,5 +1,3 @@
-//usr/bin/env go run $0 $@; exit $?
-
 // <bitbar.title>docker-ps</bitbar.title>
 // <bitbar.version>v1.0</bitbar.version>
 // <bitbar.author>Alexey Palazhchenko</bitbar.author>
@@ -190,6 +188,11 @@ func defaultCmd() {
 		log.Fatal(err)
 	}
 
+	minikubeRes, minikubeRunning := minikubeStatus()
+	if minikubeRunning {
+		fmt.Print("📦")
+	}
+
 	if len(containers) == 0 {
 		fmt.Println("🐳")
 	} else {
@@ -203,6 +206,13 @@ func defaultCmd() {
 		fmt.Printf("🐳%d/%d\n", running, total)
 	}
 	fmt.Println("---")
+
+	if len(minikubeRes) > 0 {
+		for _, l := range minikubeRes {
+			fmt.Println(l)
+		}
+		fmt.Println("---")
+	}
 
 	var lastProjectName string
 	for _, c := range containers {
@@ -256,14 +266,24 @@ func main() {
 	}
 	flag.Parse()
 
+	command := flag.Arg(0)
 	switch flag.NArg() {
 	case 0:
 		defaultCmd()
 	case 1:
-		containerCmd(flag.Arg(0), *projectF)
+		containerCmd(command, *projectF)
 	default:
 		flag.Usage()
 		os.Exit(2)
+	}
+
+	if *projectF == "" {
+		switch command {
+		case "stop":
+			minikubeStop()
+		case "kill":
+			minikubeDelete()
+		}
 	}
 
 	if *pruneF {
