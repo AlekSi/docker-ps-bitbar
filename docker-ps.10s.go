@@ -30,6 +30,7 @@ const (
 	Single ContainerType = iota
 	Compose
 	Kubernetes
+	Minikube
 )
 
 type project struct {
@@ -74,9 +75,11 @@ func (c *container) fill() {
 		case "io.kubernetes.pod.namespace":
 			c.project.typ = Kubernetes
 			c.project.name = v
-
-			// remove very long image name with sha256 hash tag
-			c.Image = ""
+			c.Image = "" // remove very long image name with sha256 hash tag
+		case "name.minikube.sigs.k8s.io":
+			c.project.typ = Minikube
+			c.project.name = v
+			c.Image = "" // remove very long image name with sha256 hash tag
 		}
 
 		if c.project.name != "" {
@@ -94,7 +97,8 @@ func (c *container) running() bool {
 	return strings.HasPrefix(c.Status, "Up ")
 }
 
-// ps returns all containers sorted by "project" (Docker Compose project, Kubernetes namespace) and name.
+// ps returns all containers sorted by "project" (Docker Compose project, Kubernetes namespace,
+// Minikube profile name) and name.
 func ps() ([]container, error) {
 	cmd := exec.Command(dockerBin, "ps", "--all", "--no-trunc", "--format={{json .}}")
 	cmd.Stderr = os.Stderr
@@ -188,11 +192,6 @@ func defaultCmd() {
 		log.Fatal(err)
 	}
 
-	minikubeRes, minikubeRunning := minikubeStatus()
-	if minikubeRunning {
-		fmt.Print("📦")
-	}
-
 	if len(containers) == 0 {
 		fmt.Println("🐳")
 	} else {
@@ -206,13 +205,6 @@ func defaultCmd() {
 		fmt.Printf("🐳%d/%d\n", running, total)
 	}
 	fmt.Println("---")
-
-	if len(minikubeRes) > 0 {
-		for _, l := range minikubeRes {
-			fmt.Println(l)
-		}
-		fmt.Println("---")
-	}
 
 	var lastProjectName string
 	for _, c := range containers {
@@ -230,6 +222,9 @@ func defaultCmd() {
 
 			case Kubernetes:
 				fmt.Printf("☸️ %s\n", lastProjectName)
+
+			case Minikube:
+				fmt.Printf("📦 %s\n", lastProjectName)
 
 			default:
 				log.Fatalf("Unexpected project type %v.", c.project.typ)
@@ -275,15 +270,6 @@ func main() {
 	default:
 		flag.Usage()
 		os.Exit(2)
-	}
-
-	if *projectF == "" {
-		switch command {
-		case "stop":
-			minikubeStop()
-		case "kill":
-			minikubeDelete()
-		}
 	}
 
 	if *pruneF {
