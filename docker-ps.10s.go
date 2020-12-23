@@ -31,6 +31,7 @@ const (
 	Compose
 	Kubernetes
 	Minikube
+	Talos
 )
 
 type project struct {
@@ -80,6 +81,9 @@ func (c *container) fill() {
 			c.project.typ = Minikube
 			c.project.name = v
 			c.Image = "" // remove very long image name with sha256 hash tag
+		case "talos.cluster.name":
+			c.project.typ = Talos
+			c.project.name = v
 		}
 
 		if c.project.name != "" {
@@ -98,7 +102,7 @@ func (c *container) running() bool {
 }
 
 // ps returns all containers sorted by "project" (Docker Compose project, Kubernetes namespace,
-// Minikube profile name) and name.
+// Minikube profile name, Talos cluster) and name.
 func ps() ([]container, error) {
 	cmd := exec.Command(dockerBin, "ps", "--all", "--no-trunc", "--format={{json .}}")
 	cmd.Stderr = os.Stderr
@@ -225,6 +229,9 @@ func defaultCmd() {
 
 			case Minikube:
 				fmt.Printf("📦 %s\n", lastProjectName)
+
+			case Talos:
+				fmt.Printf("🔺 %s\n", lastProjectName)
 
 			default:
 				log.Fatalf("Unexpected project type %v.", c.project.typ)
