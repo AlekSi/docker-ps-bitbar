@@ -180,11 +180,16 @@ func containerCmd(command, projectName string) {
 }
 
 func pruneCmd() {
-	cmd := exec.Command(dockerBin, "system", "prune", "--force", "--volumes")
-	log.Print(strings.Join(cmd.Args, " "))
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
-		log.Fatal(err)
+	for _, cmdline := range []string{
+		"system prune --force --volumes",
+		"buildx prune --force",
+	} {
+		cmd := exec.Command(dockerBin, strings.Split(cmdline, " ")...)
+		log.Print(strings.Join(cmd.Args, " "))
+		cmd.Stderr = os.Stderr
+		if err := cmd.Run(); err != nil {
+			log.Fatal(err)
+		}
 	}
 }
 
@@ -258,7 +263,7 @@ func defaultCmd() {
 }
 
 func main() {
-	projectF := flag.String("project", "", `"project" (Docker Compose project, Kubernetes namespace)`)
+	projectF := flag.String("project", "", `"project" (Docker Compose project, Kubernetes namespace, Minikube profile name, Talos cluster)`)
 	pruneF := flag.Bool("prune", false, `prune all data`)
 	flag.Usage = func() {
 		fmt.Fprintf(flag.CommandLine.Output(), "Usage: %s [flags] [command]\n\n", os.Args[0])

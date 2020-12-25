@@ -1,3 +1,3 @@
 module github.com/AlekSi/docker-ps-bitbar
 
-go 1.12
+go 1.15
