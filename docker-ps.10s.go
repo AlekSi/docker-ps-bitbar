@@ -53,6 +53,7 @@ type container struct {
 	Ports        string `json:"Ports"`
 	RunningFor   string `json:"RunningFor"`
 	Size         string `json:"Size"`
+	State        string `json:"State"`
 	Status       string `json:"Status"`
 
 	project project
@@ -98,7 +99,7 @@ func (c *container) createdAt() time.Time {
 }
 
 func (c *container) running() bool {
-	return strings.HasPrefix(c.Status, "Up ")
+	return c.State == "running" || strings.HasPrefix(c.Status, "Up ")
 }
 
 // ps returns all containers sorted by "project" (Docker Compose project, Kubernetes namespace,
@@ -152,7 +153,7 @@ func containerCmd(command, projectName string) {
 
 		var add bool
 		switch command {
-		case "start":
+		case "start", "rm":
 			add = !c.running()
 		case "restart":
 			add = true
@@ -181,14 +182,14 @@ func containerCmd(command, projectName string) {
 
 func pruneCmd() {
 	for _, cmdline := range []string{
-		"system prune --force --volumes",
 		"buildx prune --force",
+		"system prune --force --volumes",
 	} {
 		cmd := exec.Command(dockerBin, strings.Split(cmdline, " ")...)
 		log.Print(strings.Join(cmd.Args, " "))
 		cmd.Stderr = os.Stderr
 		if err := cmd.Run(); err != nil {
-			log.Fatal(err)
+			log.Print(err)
 		}
 	}
 }
@@ -243,7 +244,7 @@ func defaultCmd() {
 			}
 		}
 
-		fmt.Printf("%s ", c.Names)
+		fmt.Printf("🐳 %s ", c.Names)
 		if c.Image != "" {
 			fmt.Printf("(%s) ", c.Image)
 		}
@@ -256,18 +257,19 @@ func defaultCmd() {
 
 	if bin != "" {
 		fmt.Println("---")
-		fmt.Printf("🛑 Stop all | bash=%q param1=stop terminal=false refresh=true\n", bin)
-		fmt.Printf("📛 Prune | bash=%q param1=-prune terminal=false refresh=true\n", bin)
-		fmt.Printf("🧨 Kill all and prune | bash=%q param1=-prune param2=kill terminal=false refresh=true\n", bin)
+		fmt.Printf("⭕️ Stop all | bash=%q param1=stop terminal=false refresh=true\n", bin)
+		fmt.Printf("🛑 Cleanup stopped containers | bash=%q param1=rm terminal=false refresh=true\n", bin)
+		fmt.Printf("⛔️ Prune all data | bash=%q param1=-prune terminal=false refresh=true\n", bin)
+		fmt.Printf("📛 Kill all and prune | bash=%q param1=-prune param2=kill terminal=false refresh=true\n", bin)
 	}
 }
 
 func main() {
 	projectF := flag.String("project", "", `"project" (Docker Compose project, Kubernetes namespace, Minikube profile name, Talos cluster)`)
-	pruneF := flag.Bool("prune", false, `prune all data`)
+	pruneF := flag.Bool("prune", false, `prune stopped containers, volumes and caches`)
 	flag.Usage = func() {
 		fmt.Fprintf(flag.CommandLine.Output(), "Usage: %s [flags] [command]\n\n", os.Args[0])
-		fmt.Fprintf(flag.CommandLine.Output(), "Commands: start, stop, restart, kill.\n\n")
+		fmt.Fprintf(flag.CommandLine.Output(), "Commands: start, stop, restart, kill, rm.\n\n")
 		fmt.Fprintf(flag.CommandLine.Output(), "Flags:\n")
 		flag.PrintDefaults()
 	}
