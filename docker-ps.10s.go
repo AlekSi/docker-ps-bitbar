@@ -244,7 +244,12 @@ func defaultCmd() {
 			}
 		}
 
-		fmt.Printf("🐳 %s ", c.Names)
+		icon := "🐳"
+		if strings.HasPrefix(c.Image, "moby/buildkit:") {
+			icon = "⚙️"
+		}
+
+		fmt.Printf("%s %s ", icon, c.Names)
 		if c.Image != "" {
 			fmt.Printf("(%s) ", c.Image)
 		}
