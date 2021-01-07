@@ -266,7 +266,11 @@ func containerCmd(command, projectName string) {
 		return
 	}
 
-	args := append([]string{command}, ids...)
+	args := []string{command}
+	if command == "rm" {
+		args = append(args, "--force", "--volumes")
+	}
+	args = append(args, ids...)
 	cmd := exec.Command(dockerBin, args...)
 	log.Print(strings.Join(cmd.Args, " "))
 	cmd.Stderr = os.Stderr
@@ -342,8 +346,9 @@ func defaultCmd(ctx context.Context) {
 				fmt.Printf("🐙 %s\n", lastProjectName)
 
 				fmt.Printf("-- ▶️ Start all | bash=%q param1=-project=%s param2=start terminal=false refresh=true\n", bin, lastProjectName)
-				fmt.Printf("-- ⏹ Stop all | bash=%q param1=-project=%s param2=stop terminal=false refresh=true\n", bin, lastProjectName)
 				fmt.Printf("-- 🔄 Restart all | bash=%q param1=-project=%s param2=restart terminal=false refresh=true\n", bin, lastProjectName)
+				fmt.Printf("-- ⏹ Stop all | bash=%q param1=-project=%s param2=stop terminal=false refresh=true\n", bin, lastProjectName)
+				fmt.Printf("-- ⏬ Stop and remove all | bash=%q param1=-project=%s param2=kill param3=rm terminal=false refresh=true\n", bin, lastProjectName)
 
 			case Kubernetes:
 				fmt.Printf("☸️ %s\n", lastProjectName)
@@ -357,6 +362,7 @@ func defaultCmd(ctx context.Context) {
 				fmt.Printf("-- ▶️ Start all | bash=%q param1=-project=%s param2=start terminal=false refresh=true\n", bin, lastProjectName)
 				fmt.Printf("-- ⏹ Stop all | bash=%q param1=-project=%s param2=stop terminal=false refresh=true\n", bin, lastProjectName)
 				fmt.Printf("-- 🔄 Restart all | bash=%q param1=-project=%s param2=restart terminal=false refresh=true\n", bin, lastProjectName)
+				fmt.Printf("-- ⏬ Stop and remove all | bash=%q param1=-project=%s param2=kill param3=rm terminal=false refresh=true\n", bin, lastProjectName)
 
 			default:
 				log.Fatalf("Unexpected project type %v.", c.project.typ)
@@ -415,24 +421,21 @@ func defaultCmd(ctx context.Context) {
 
 func main() {
 	projectF := flag.String("project", "", `"project" (Docker Compose project, Kubernetes namespace, Minikube profile name, Talos cluster)`)
-	pruneF := flag.Bool("prune", false, `prune stopped containers, volumes and caches`)
+	pruneF := flag.Bool("prune", false, `prune stopped containers, networks, volumes, and caches`)
 	flag.Usage = func() {
 		fmt.Fprintf(flag.CommandLine.Output(), "Usage: %s [flags] [command]\n\n", os.Args[0])
-		fmt.Fprintf(flag.CommandLine.Output(), "Commands: start, stop, restart, kill, rm.\n\n")
+		fmt.Fprintf(flag.CommandLine.Output(), "Commands: start, stop, restart, rm, kill.\n\n")
 		fmt.Fprintf(flag.CommandLine.Output(), "Flags:\n")
 		flag.PrintDefaults()
 	}
 	flag.Parse()
 
-	command := flag.Arg(0)
-	switch flag.NArg() {
-	case 0:
+	if flag.NArg() == 0 {
 		defaultCmd(context.TODO())
-	case 1:
-		containerCmd(command, *projectF)
-	default:
-		flag.Usage()
-		os.Exit(2)
+	} else {
+		for _, c := range flag.Args() {
+			containerCmd(c, *projectF)
+		}
 	}
 
 	if *pruneF {
