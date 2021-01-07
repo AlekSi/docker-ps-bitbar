@@ -10,6 +10,8 @@ package main
 
 import (
 	"bytes"
+	"context"
+	"encoding/hex"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -20,6 +22,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"golang.org/x/sync/errgroup"
 )
 
 const dockerBin = "/usr/local/bin/docker"
@@ -102,10 +106,10 @@ func (c *container) running() bool {
 	return c.State == "running" || strings.HasPrefix(c.Status, "Up ")
 }
 
-// ps returns all containers sorted by "project" (Docker Compose project, Kubernetes namespace,
+// containerLs returns all containers sorted by "project" (Docker Compose project, Kubernetes namespace,
 // Minikube profile name, Talos cluster) and name.
-func ps() ([]container, error) {
-	cmd := exec.Command(dockerBin, "ps", "--all", "--no-trunc", "--format={{json .}}")
+func containerLs() ([]container, error) {
+	cmd := exec.Command(dockerBin, "container", "ls", "--all", "--no-trunc", "--format={{json .}}")
 	cmd.Stderr = os.Stderr
 	b, err := cmd.Output()
 	if err != nil {
@@ -139,8 +143,99 @@ func ps() ([]container, error) {
 	return containers, nil
 }
 
+// network contains parsed `docker network ls` output for a single network.
+type network struct {
+	CreatedAt string `json:"CreatedAt"`
+	Driver    string `json:"Driver"`
+	ID        string `json:"ID"`
+	Name      string `json:"Name"`
+	Scope     string `json:"Scope"`
+}
+
+// networkLs returns all networks.
+func networkLs() ([]network, error) {
+	cmd := exec.Command(dockerBin, "network", "ls", "--no-trunc", "--format={{json .}}")
+	cmd.Stderr = os.Stderr
+	b, err := cmd.Output()
+	if err != nil {
+		return nil, err
+	}
+
+	var networks []network
+	d := json.NewDecoder(bytes.NewReader(b))
+	for {
+		var n network
+		if err = d.Decode(&n); err != nil {
+			if err == io.EOF {
+				break
+			}
+			return nil, err
+		}
+		networks = append(networks, n)
+	}
+
+	sort.Slice(networks, func(i int, j int) bool {
+		if networks[i].Driver != networks[j].Driver {
+			return networks[i].Driver < networks[j].Driver
+		}
+		return networks[i].Name < networks[j].Name
+	})
+
+	return networks, nil
+}
+
+// volume contains parsed `docker volume ls` output for a single volume.
+type volume struct {
+	Driver string `json:"Driver"`
+	Name   string `json:"Name"`
+}
+
+func (v *volume) anonymous() bool {
+	if v.Driver != "local" {
+		return false
+	}
+
+	if len(v.Name) != 64 {
+		return false
+	}
+	_, err := hex.DecodeString(v.Name)
+	return err == nil
+}
+
+// volumeLs returns all volumes.
+func volumeLs() ([]volume, error) {
+	cmd := exec.Command(dockerBin, "volume", "ls", "--format={{json .}}")
+	cmd.Stderr = os.Stderr
+	b, err := cmd.Output()
+	if err != nil {
+		return nil, err
+	}
+
+	var volumes []volume
+	d := json.NewDecoder(bytes.NewReader(b))
+	for {
+		var v volume
+		if err = d.Decode(&v); err != nil {
+			if err == io.EOF {
+				break
+			}
+			return nil, err
+		}
+		volumes = append(volumes, v)
+	}
+
+	sort.Slice(volumes, func(i int, j int) bool {
+		if volumes[i].Driver != volumes[j].Driver {
+			return volumes[i].Driver < volumes[j].Driver
+		}
+		return volumes[i].Name < volumes[j].Name
+	})
+
+	return volumes, nil
+}
+
 func containerCmd(command, projectName string) {
-	containers, err := ps()
+	containers, err := containerLs()
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -194,11 +289,31 @@ func pruneCmd() {
 	}
 }
 
-func defaultCmd() {
+func defaultCmd(ctx context.Context) {
 	bin, _ := os.Executable()
 
-	containers, err := ps()
-	if err != nil {
+	var containers []container
+	var networks []network
+	var volumes []volume
+
+	g, ctx := errgroup.WithContext(ctx)
+	_ = ctx // TODO
+	g.Go(func() error {
+		var err error
+		containers, err = containerLs()
+		return err
+	})
+	g.Go(func() error {
+		var err error
+		networks, err = networkLs()
+		return err
+	})
+	g.Go(func() error {
+		var err error
+		volumes, err = volumeLs()
+		return err
+	})
+	if err := g.Wait(); err != nil {
 		log.Fatal(err)
 	}
 
@@ -260,10 +375,35 @@ func defaultCmd() {
 		}
 	}
 
+	if len(networks) != 0 {
+		fmt.Println("---")
+		fmt.Printf("%d networks\n", len(networks))
+		for _, n := range networks {
+			fmt.Printf("%s (%s)\n", n.Name, n.Driver)
+		}
+	}
+
+	if len(volumes) != 0 {
+		var anonymous int
+		fmt.Println("---")
+		fmt.Printf("%d volumes\n", len(volumes))
+		for _, v := range volumes {
+			if v.anonymous() {
+				anonymous++
+				continue
+			}
+			fmt.Printf("%s (%s)\n", v.Name, v.Driver)
+		}
+
+		if anonymous != 0 {
+			fmt.Printf("%d anonymous\n", anonymous)
+		}
+	}
+
 	if bin != "" {
 		fmt.Println("---")
-		fmt.Printf("⭕️ Stop all | bash=%q param1=stop terminal=false refresh=true\n", bin)
-		fmt.Printf("🛑 Cleanup stopped containers | bash=%q param1=rm terminal=false refresh=true\n", bin)
+		fmt.Printf("⭕️ Stop all containers | bash=%q param1=stop terminal=false refresh=true\n", bin)
+		fmt.Printf("🛑 Remove stopped containers | bash=%q param1=rm terminal=false refresh=true\n", bin)
 		fmt.Printf("⛔️ Prune all data | bash=%q param1=-prune terminal=false refresh=true\n", bin)
 		fmt.Printf("📛 Kill all and prune | bash=%q param1=-prune param2=kill terminal=false refresh=true\n", bin)
 	}
@@ -283,7 +423,7 @@ func main() {
 	command := flag.Arg(0)
 	switch flag.NArg() {
 	case 0:
-		defaultCmd()
+		defaultCmd(context.TODO())
 	case 1:
 		containerCmd(command, *projectF)
 	default:
