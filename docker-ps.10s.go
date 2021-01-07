@@ -28,10 +28,10 @@ import (
 
 const dockerBin = "/usr/local/bin/docker"
 
-type ContainerType int
+type containerType int
 
 const (
-	Single ContainerType = iota
+	Single containerType = iota
 	Compose
 	Kubernetes
 	Minikube
@@ -39,7 +39,7 @@ const (
 )
 
 type project struct {
-	typ  ContainerType
+	typ  containerType
 	name string
 }
 
@@ -354,6 +354,10 @@ func defaultCmd(ctx context.Context) {
 			case Talos:
 				fmt.Printf("🔺 %s\n", lastProjectName)
 
+				fmt.Printf("-- ▶️ Start all | bash=%q param1=-project=%s param2=start terminal=false refresh=true\n", bin, lastProjectName)
+				fmt.Printf("-- ⏹ Stop all | bash=%q param1=-project=%s param2=stop terminal=false refresh=true\n", bin, lastProjectName)
+				fmt.Printf("-- 🔄 Restart all | bash=%q param1=-project=%s param2=restart terminal=false refresh=true\n", bin, lastProjectName)
+
 			default:
 				log.Fatalf("Unexpected project type %v.", c.project.typ)
 			}
@@ -404,8 +408,8 @@ func defaultCmd(ctx context.Context) {
 		fmt.Println("---")
 		fmt.Printf("⭕️ Stop all containers | bash=%q param1=stop terminal=false refresh=true\n", bin)
 		fmt.Printf("🛑 Remove stopped containers | bash=%q param1=rm terminal=false refresh=true\n", bin)
-		fmt.Printf("⛔️ Prune all data | bash=%q param1=-prune terminal=false refresh=true\n", bin)
-		fmt.Printf("📛 Kill all and prune | bash=%q param1=-prune param2=kill terminal=false refresh=true\n", bin)
+		fmt.Printf("⛔️ Prune orphan data | bash=%q param1=-prune terminal=false refresh=true\n", bin)
+		fmt.Printf("📛 Stop, remove and and prune everything | bash=%q param1=-prune param2=kill terminal=false refresh=true\n", bin)
 	}
 }
 
