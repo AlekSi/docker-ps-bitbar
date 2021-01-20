@@ -32,6 +32,7 @@ type containerType int
 
 const (
 	Single containerType = iota
+	Group
 	Compose
 	Kubernetes
 	Minikube
@@ -75,6 +76,9 @@ func (c *container) fill() {
 
 		k, v := pair[0], pair[1]
 		switch k {
+		case "com.github.AlekSi.group":
+			c.project.typ = Group
+			c.project.name = v
 		case "com.docker.compose.project":
 			c.project.typ = Compose
 			c.project.name = v
@@ -342,6 +346,9 @@ func defaultCmd(ctx context.Context) {
 
 			fmt.Println("---")
 			switch c.project.typ {
+			case Group:
+				fmt.Printf("🐳 %s\n", lastProjectName)
+
 			case Compose:
 				fmt.Printf("🐙 %s\n", lastProjectName)
 
