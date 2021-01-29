@@ -76,7 +76,7 @@ func (c *container) fill() {
 
 		k, v := pair[0], pair[1]
 		switch k {
-		case "com.github.AlekSi.group":
+		case "com.github.AlekSi.docker-ps.group":
 			c.project.typ = Group
 			c.project.name = v
 		case "com.docker.compose.project":
