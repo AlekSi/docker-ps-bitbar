@@ -394,16 +394,28 @@ func defaultCmd(ctx context.Context) {
 
 	if len(networks) != 0 {
 		fmt.Println("---")
-		fmt.Printf("%d networks\n", len(networks))
+
+		msg := fmt.Sprintf("%d network", len(networks))
+		if len(networks) > 1 {
+			msg += "s"
+		}
+		fmt.Println(msg)
+
 		for _, n := range networks {
 			fmt.Printf("%s (%s)\n", n.Name, n.Driver)
 		}
 	}
 
 	if len(volumes) != 0 {
-		var anonymous int
 		fmt.Println("---")
-		fmt.Printf("%d volumes\n", len(volumes))
+
+		msg := fmt.Sprintf("%d volume", len(volumes))
+		if len(volumes) > 1 {
+			msg += "s"
+		}
+		fmt.Println(msg)
+
+		var anonymous int
 		for _, v := range volumes {
 			if v.anonymous() {
 				anonymous++
