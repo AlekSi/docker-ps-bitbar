@@ -10,6 +10,7 @@ package main
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/hex"
 	"encoding/json"
@@ -19,9 +20,8 @@ import (
 	"log"
 	"os"
 	"os/exec"
-	"sort"
+	"slices"
 	"strings"
-	"time"
 
 	"golang.org/x/sync/errgroup"
 )
@@ -32,7 +32,6 @@ type containerType int
 
 const (
 	Single containerType = iota
-	Group
 	Compose
 	Kubernetes
 	Minikube
@@ -55,13 +54,17 @@ type container struct {
 	Mounts       string `json:"Mounts"`
 	Names        string `json:"Names"`
 	Networks     string `json:"Networks"`
-	Ports        string `json:"Ports"`
-	RunningFor   string `json:"RunningFor"`
-	Size         string `json:"Size"`
-	State        string `json:"State"`
-	Status       string `json:"Status"`
+	Platform     struct {
+		Architecture string `json:"architecture"`
+		Os           string `json:"os"`
+	} `json:"Platform"`
+	Ports      string `json:"Ports"`
+	RunningFor string `json:"RunningFor"`
+	Size       string `json:"Size"`
+	State      string `json:"State"`
+	Status     string `json:"Status"`
 
-	project project
+	project project `json:"-"`
 }
 
 // fill sets project field, and may also change other fields.
@@ -76,9 +79,6 @@ func (c *container) fill() {
 
 		k, v := pair[0], pair[1]
 		switch k {
-		case "com.github.AlekSi.docker-ps.group":
-			c.project.typ = Group
-			c.project.name = v
 		case "com.docker.compose.project":
 			c.project.typ = Compose
 			c.project.name = v
@@ -101,19 +101,14 @@ func (c *container) fill() {
 	}
 }
 
-func (c *container) createdAt() time.Time {
-	t, _ := time.Parse("2006-01-02 15:04:05 -0700 MST", c.CreatedAt)
-	return t
-}
-
 func (c *container) running() bool {
-	return c.State == "running" || strings.HasPrefix(c.Status, "Up ")
+	return c.State == "running"
 }
 
 // containerLs returns all containers sorted by "project" (Docker Compose project, Kubernetes namespace,
 // Minikube profile name, Talos cluster) and name.
 func containerLs() ([]container, error) {
-	cmd := exec.Command(dockerBin, "container", "ls", "--all", "--no-trunc", "--format={{json .}}")
+	cmd := exec.Command(dockerBin, "container", "ls", "--all", "--no-trunc", "--format=json")
 	cmd.Stderr = os.Stderr
 	b, err := cmd.Output()
 	if err != nil {
@@ -134,14 +129,12 @@ func containerLs() ([]container, error) {
 		containers = append(containers, c)
 	}
 
-	sort.Slice(containers, func(i int, j int) bool {
-		if containers[i].project.typ != containers[j].project.typ {
-			return containers[i].project.typ < containers[j].project.typ
-		}
-		if containers[i].project.name != containers[j].project.name {
-			return containers[i].project.name < containers[j].project.name
-		}
-		return containers[i].Names < containers[j].Names
+	slices.SortFunc(containers, func(a, b container) int {
+		return cmp.Or(
+			cmp.Compare(a.project.typ, b.project.typ),
+			cmp.Compare(a.project.name, b.project.name),
+			cmp.Compare(a.Names, b.Names),
+		)
 	})
 
 	return containers, nil
@@ -158,7 +151,7 @@ type network struct {
 
 // networkLs returns all networks.
 func networkLs() ([]network, error) {
-	cmd := exec.Command(dockerBin, "network", "ls", "--no-trunc", "--format={{json .}}")
+	cmd := exec.Command(dockerBin, "network", "ls", "--no-trunc", "--format=json")
 	cmd.Stderr = os.Stderr
 	b, err := cmd.Output()
 	if err != nil {
@@ -178,11 +171,11 @@ func networkLs() ([]network, error) {
 		networks = append(networks, n)
 	}
 
-	sort.Slice(networks, func(i int, j int) bool {
-		if networks[i].Driver != networks[j].Driver {
-			return networks[i].Driver < networks[j].Driver
-		}
-		return networks[i].Name < networks[j].Name
+	slices.SortFunc(networks, func(a, b network) int {
+		return cmp.Or(
+			cmp.Compare(a.Driver, b.Driver),
+			cmp.Compare(a.Name, b.Name),
+		)
 	})
 
 	return networks, nil
@@ -202,13 +195,14 @@ func (v *volume) anonymous() bool {
 	if len(v.Name) != 64 {
 		return false
 	}
+
 	_, err := hex.DecodeString(v.Name)
 	return err == nil
 }
 
 // volumeLs returns all volumes.
 func volumeLs() ([]volume, error) {
-	cmd := exec.Command(dockerBin, "volume", "ls", "--format={{json .}}")
+	cmd := exec.Command(dockerBin, "volume", "ls", "--format=json")
 	cmd.Stderr = os.Stderr
 	b, err := cmd.Output()
 	if err != nil {
@@ -228,11 +222,11 @@ func volumeLs() ([]volume, error) {
 		volumes = append(volumes, v)
 	}
 
-	sort.Slice(volumes, func(i int, j int) bool {
-		if volumes[i].Driver != volumes[j].Driver {
-			return volumes[i].Driver < volumes[j].Driver
-		}
-		return volumes[i].Name < volumes[j].Name
+	slices.SortFunc(volumes, func(a, b volume) int {
+		return cmp.Or(
+			cmp.Compare(a.Driver, b.Driver),
+			cmp.Compare(a.Name, b.Name),
+		)
 	})
 
 	return volumes, nil
@@ -346,9 +340,6 @@ func defaultCmd(ctx context.Context) {
 
 			fmt.Println("---")
 			switch c.project.typ {
-			case Group:
-				fmt.Printf("🐳 %s\n", lastProjectName)
-
 			case Compose:
 				fmt.Printf("🐙 %s\n", lastProjectName)
 
